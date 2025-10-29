@@ -1,0 +1,6 @@
+# requirements.txt 
+kafka-python
+pandas
+ollama
+scikit-learn  # Necesario para el scoring (TFIDF, Cosine Similarity)
+nltk          # Necesario para el scoring (Jaccard)

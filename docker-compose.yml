@@ -1,0 +1,125 @@
+version: "3.8"
+
+services:
+  
+  # 1. Base de Mensajes
+  
+  zookeeper:
+    image: wurstmeister/zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: wurstmeister/kafka
+    container_name: kafka
+    ports:
+      # Exponer el puerto de escucha externo (para el host)
+      - "29092:29092" 
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # CRÍTICO: Kafka escucha en dos lugares: interno (kafka:9092) y externo (0.0.0.0:29092)
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      # CRÍTICO: direcciones de escucha
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    depends_on:
+      - zookeeper
+
+  
+  # 2. Servicio LLM 
+  
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    command: ["serve"] 
+    volumes:
+      - ollama_data:/root/.ollama
+    
+
+  
+  # 3. Servicios Python 
+  
+
+  # Servicio 1: Persistor de BDD (Debe inicializar la DB primero)
+  persistor_bdd:
+    build: .
+    container_name: persistor_bdd
+    # Este comando también inicializa la tabla a través de database.py que se llama dentro.
+    command: python persistor_bdd.py 
+    volumes:
+      # Monta código y datos. La DB se crea aquí.
+      - .:/app
+      - db_data:/app
+    depends_on:
+      kafka:
+        condition: service_started
+
+  # Servicio 2: Generador de Tráfico
+  generador_trafico:
+    build: .
+    container_name: generador_trafico
+    command: python generador_trafico.py
+    volumes:
+      - .:/app
+    # CRÍTICO: Debe esperar a Kafka y al Persistor (que maneja la inicialización de la tabla)
+    depends_on:
+      kafka:
+        condition: service_started
+      persistor_bdd:
+        condition: service_started
+
+  # Servicio 3: Consumidor LLM
+  consumidor_llm:
+    build: .
+    container_name: consumidor_llm
+    command: python consumidor_llm.py
+    volumes:
+      - .:/app
+    depends_on:
+      kafka:
+        condition: service_started
+      ollama:
+        condition: service_started
+
+  # Servicio 4: Procesador Flink 
+  procesador_flink:
+    build: .
+    container_name: procesador_flink_py
+    command: python procesador_flink.py
+    volumes:
+      - .:/app
+    depends_on:
+      kafka:
+        condition: service_started
+
+  # Servicio 5: Gestor de Reintentos
+  gestor_reintentos:
+    build: .
+    container_name: gestor_reintentos
+    command: python gestor_reintentos.py
+    volumes:
+      - .:/app
+    depends_on:
+      kafka:
+        condition: service_started
+        
+  
+  # 4. Flink Real 
+  
+  flink:
+    image: flink:1.17-scala_2.12
+    container_name: flink_jobmanager
+    command: jobmanager 
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink 
+    ports:
+      - "8081:8081"
+
+volumes:
+  ollama_data:
+  db_data:
